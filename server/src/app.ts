@@ -4,7 +4,7 @@ import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import { env } from './config/env';
 import { connectRedis, disconnectRedis } from './config/redis';
-import { globalLimiter } from './middleware/rateLimiter';
+// import { globalLimiter } from './middleware/rateLimiter';
 import authRoutes from './routes/authRoutes';
 import { AppError } from './utils/errors';
 
@@ -20,7 +20,7 @@ app.use(cors({
 app.use(express.json({ limit: '10kb' }));
 app.use(cookieParser());
 
-app.use('/api', globalLimiter);
+// app.use('/api', globalLimiter);
 
 app.use('/api/auth', authRoutes);
 

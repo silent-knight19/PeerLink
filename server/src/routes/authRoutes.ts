@@ -1,15 +1,16 @@
+import fs from 'fs';
 import { Router, Request, Response, NextFunction } from 'express';
 import { authService } from '../services/authService';
 import { authenticate } from '../middleware/authenticate';
 import { validate } from '../middleware/validate';
-import {
-  registerLimiter,
-  loginLimiter,
-  forgotPasswordLimiter,
-  refreshLimiter,
-  changePasswordLimiter,
-  verifyEmailLimiter,
-} from '../middleware/rateLimiter';
+// import {
+//   registerLimiter,
+//   loginLimiter,
+//   forgotPasswordLimiter,
+//   refreshLimiter,
+//   changePasswordLimiter,
+//   verifyEmailLimiter,
+// } from '../middleware/rateLimiter';
 import {
   registerSchema,
   loginSchema,
@@ -36,7 +37,7 @@ function getDeviceInfo(req: Request) {
 // POST /api/auth/register
 router.post(
   '/register',
-  registerLimiter,
+  // registerLimiter,
   validate(registerSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -55,7 +56,7 @@ router.post(
 // POST /api/auth/login
 router.post(
   '/login',
-  loginLimiter,
+  // loginLimiter,
   validate(loginSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -111,7 +112,7 @@ router.post(
 // POST /api/auth/refresh
 router.post(
   '/refresh',
-  refreshLimiter,
+  // refreshLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const refreshToken = req.cookies?.refreshToken;
@@ -166,6 +167,9 @@ router.get(
   '/google/callback',
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      try {
+        fs.appendFileSync('/tmp/google_callback_hit.log', `${new Date().toISOString()} - Callback received\n`);
+      } catch {}
       const { code, state } = req.query as { code: string; state: string };
 
       if (!code || !state) {
@@ -192,12 +196,19 @@ router.get(
         maxAge: 7 * 24 * 60 * 60 * 1000,
       });
 
+      try {
+        fs.appendFileSync('/tmp/google_callback_hit.log', `${new Date().toISOString()} - Callback SUCCEEDED for user ${result.user.email}, redirecting to client\n`);
+      } catch {}
       // Use URL fragment (#) instead of query param (?) to prevent
       // the access token from appearing in server logs or Referer headers
       const callbackPath = '/auth/callback';
       const fragment = `accessToken=${encodeURIComponent(result.tokens.accessToken)}&isNewUser=${result.isNewUser}`;
       res.redirect(`${env.CLIENT_URL}${callbackPath}#${fragment}`);
     } catch (error) {
+      try {
+        const msg = error instanceof Error ? `${error.name}: ${error.message}\n${error.stack}\n` : String(error);
+        fs.appendFileSync('/tmp/google_callback_error.log', `${new Date().toISOString()} - ${msg}\n`);
+      } catch {}
       const redirectUrl = new URL('/login', env.CLIENT_URL);
       redirectUrl.searchParams.set('error', 'google_auth_failed');
       res.redirect(redirectUrl.toString());
@@ -208,7 +219,7 @@ router.get(
 // POST /api/auth/verify-email
 router.post(
   '/verify-email',
-  verifyEmailLimiter,
+  // verifyEmailLimiter,
   validate(verifyEmailSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -223,7 +234,7 @@ router.post(
 // POST /api/auth/forgot-password
 router.post(
   '/forgot-password',
-  forgotPasswordLimiter,
+  // forgotPasswordLimiter,
   validate(forgotPasswordSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -254,7 +265,7 @@ router.post(
 // POST /api/auth/change-password
 router.post(
   '/change-password',
-  changePasswordLimiter,
+  // changePasswordLimiter,
   authenticate,
   validate(changePasswordSchema),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {

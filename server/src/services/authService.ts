@@ -205,8 +205,9 @@ export class AuthService {
     let googleProfile: GoogleProfile;
     try {
       googleProfile = await getGoogleProfileFromCode(code);
-    } catch {
-      throw new AuthError('GOOGLE_AUTH_FAILED', 'Google authentication failed. Please try again.');
+    } catch (googleError) {
+      const errMsg = googleError instanceof Error ? `${googleError.message}\n${googleError.stack}` : String(googleError);
+      throw new AuthError('GOOGLE_AUTH_FAILED', `Google authentication failed: ${errMsg}`);
     }
 
     let user = await findUserByGoogleId(googleProfile.googleId);

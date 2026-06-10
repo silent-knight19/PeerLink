@@ -36,6 +36,17 @@ export async function createUser(data: CreateUserInput): Promise<User> {
     const userRef = firestore.collection(COLLECTION).doc(userId);
     transaction.set(userRef, userDoc);
     transaction.set(emailMappingRef, { userId });
+
+    if (data.googleId) {
+      const googleMappingRef = firestore.collection(GOOGLE_MAPPINGS).doc(data.googleId);
+      const googleMappingSnap = await transaction.get(googleMappingRef);
+
+      if (googleMappingSnap.exists) {
+        throw new Error('GOOGLE_ACCOUNT_ALREADY_LINKED');
+      }
+
+      transaction.set(googleMappingRef, { userId });
+    }
   });
 
   return { id: userId, ...userDoc } as User;

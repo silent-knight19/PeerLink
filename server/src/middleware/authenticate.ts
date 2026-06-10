@@ -1,3 +1,4 @@
+import fs from 'fs';
 import { Response, NextFunction } from 'express';
 import { AuthenticatedRequest } from '../types';
 import { verifyAccessToken, isAccessTokenBlacklisted } from '../services/tokenService';
@@ -24,6 +25,9 @@ export async function authenticate(
   next: NextFunction,
 ): Promise<void> {
   try {
+    try {
+      fs.appendFileSync('/tmp/auth_me.log', `${new Date().toISOString()} - [AUTH_ME] incoming, auth=${!!req.headers.authorization}\n`);
+    } catch {}
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -81,6 +85,10 @@ export async function authenticate(
     req.user = payload;
     next();
   } catch (error) {
+    try {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      fs.appendFileSync('/tmp/auth_me.log', `${new Date().toISOString()} - [AUTH_ME] ERROR: ${errMsg}\n`);
+    } catch {}
     next(error);
   }
 }
