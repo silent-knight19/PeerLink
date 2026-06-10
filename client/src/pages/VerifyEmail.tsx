@@ -1,13 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
+import { motion } from 'framer-motion';
 import { verifyEmail } from '../services/authApi';
 
 type VerifyStatus = 'verifying' | 'success' | 'error';
 
-/**
- * Handles the email verification link clicked from the user's inbox.
- * Extracts userId and token from URL params, sends them to the server.
- */
 export default function VerifyEmail() {
   const [searchParams] = useSearchParams();
   const [status, setStatus] = useState<VerifyStatus>('verifying');
@@ -41,42 +38,107 @@ export default function VerifyEmail() {
   }, [searchParams]);
 
   return (
-    <div className="auth-page">
-      <div className="auth-card">
-        <div className="auth-header">
-          <h1 className="auth-logo">PeerLink</h1>
-        </div>
+    <div className="auth-split-page">
+      <div className="auth-card-container">
+        <motion.div
+          className="auth-left-panel"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.5 }}
+        >
+          <img src="/images/login.png" alt="PeerLink" className="auth-hero-image" />
+        </motion.div>
 
-        {status === 'verifying' && (
-          <>
-            <h2 className="auth-title">Verifying your email...</h2>
-            <div className="auth-loading">
-              <div className="spinner" />
+        <motion.div
+          className="auth-right-panel"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, delay: 0.1 }}
+        >
+          <div className="auth-right-content">
+            <div className="auth-top-bar">
+              <div className="auth-logo-wrapper">
+                <img src="/images/logo.png" className="auth-logo-img" alt="PeerLink" />
+              </div>
+              <Link to="/login" className="auth-signup-link">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path>
+                  <polyline points="10 17 15 12 10 7"></polyline>
+                  <line x1="15" y1="12" x2="3" y2="12"></line>
+                </svg>
+                Sign In
+              </Link>
             </div>
-          </>
-        )}
 
-        {status === 'success' && (
-          <>
-            <h2 className="auth-title">Email verified!</h2>
-            <p style={{ textAlign: 'center', color: '#6b7280', marginBottom: '24px' }}>
-              Your email has been verified successfully. You can now sign in.
-            </p>
-            <Link to="/login" className="btn btn-primary btn-full" style={{ textAlign: 'center', textDecoration: 'none' }}>
-              Sign in
-            </Link>
-          </>
-        )}
+            <div className="auth-form-container">
+              {status === 'verifying' && (
+                <div>
+                  <div className="auth-form-header">
+                    <h1 className="auth-welcome">Verifying email</h1>
+                    <p className="auth-subtitle" style={{ marginTop: '16px', lineHeight: '1.5' }}>
+                      Please wait while we verify your email address...
+                    </p>
+                  </div>
+                  <div className="page-loader" style={{ minHeight: 'auto', marginTop: '40px' }}>
+                    <div className="spinner" />
+                  </div>
+                </div>
+              )}
 
-        {status === 'error' && (
-          <>
-            <h2 className="auth-title">Verification failed</h2>
-            <div className="alert alert-error">{errorMessage}</div>
-            <Link to="/login" className="btn btn-primary btn-full" style={{ textAlign: 'center', textDecoration: 'none', marginTop: '16px' }}>
-              Go to Sign in
-            </Link>
-          </>
-        )}
+              {status === 'success' && (
+                <div>
+                  <div className="auth-form-header">
+                    <h1 className="auth-welcome">Verified!</h1>
+                    <p className="auth-subtitle" style={{ marginTop: '16px', lineHeight: '1.5' }}>
+                      Your email has been verified successfully. You can now sign in to your account.
+                    </p>
+                  </div>
+                  <Link
+                    to="/login"
+                    className="btn-signin"
+                    style={{ textDecoration: 'none', marginTop: '30px' }}
+                  >
+                    Sign In
+                  </Link>
+                </div>
+              )}
+
+              {status === 'error' && (
+                <div>
+                  <div className="auth-form-header">
+                    <h1 className="auth-welcome">Failed</h1>
+                    <p className="auth-subtitle" style={{ marginTop: '16px', lineHeight: '1.5' }}>
+                      Verification failed. The link may have expired or is invalid.
+                    </p>
+                  </div>
+                  <div className="alert alert-error" style={{ margin: '20px 0' }}>
+                    {errorMessage}
+                  </div>
+                  <Link
+                    to="/login"
+                    className="btn-signin"
+                    style={{ textDecoration: 'none', marginTop: '10px' }}
+                  >
+                    Go to Sign In
+                  </Link>
+                </div>
+              )}
+            </div>
+
+            <div className="auth-footer-bar">
+              <span className="copyright">&copy; 2026 PeerLink Inc.</span>
+              <div className="footer-links">
+                <Link to="/contact">Contact Us</Link>
+                <div className="language-select">
+                  English
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="6 9 12 15 18 9" />
+                  </svg>
+                </div>
+              </div>
+            </div>
+          </div>
+        </motion.div>
       </div>
     </div>
   );

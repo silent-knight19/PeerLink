@@ -1,14 +1,33 @@
+import http from 'http';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
+import { Server as SocketIOServer } from 'socket.io';
 import { env } from './config/env';
 import { connectRedis, disconnectRedis } from './config/redis';
 // import { globalLimiter } from './middleware/rateLimiter';
 import authRoutes from './routes/authRoutes';
+import roomRoutes from './routes/roomRoutes';
+import { authenticateSocket } from './socket/socketAuth';
+import { registerSocketHandlers } from './socket/socketManager';
 import { AppError } from './utils/errors';
 
 const app = express();
+const server = http.createServer(app);
+
+const io = new SocketIOServer(server, {
+  cors: {
+    origin: env.CLIENT_URL,
+    credentials: true,
+    methods: ['GET', 'POST'],
+  },
+});
+
+io.use(authenticateSocket);
+registerSocketHandlers(io);
+
+export { io };
 
 app.use(helmet());
 app.use(cors({
@@ -23,6 +42,7 @@ app.use(cookieParser());
 // app.use('/api', globalLimiter);
 
 app.use('/api/auth', authRoutes);
+app.use('/api/rooms', roomRoutes);
 
 app.get('/api/health', (_req: Request, res: Response) => {
   res.json({
@@ -73,7 +93,7 @@ async function start() {
     await connectRedis();
     console.log('Connected to Redis');
 
-    app.listen(env.PORT, () => {
+    server.listen(env.PORT, () => {
       console.log(`Server running on port ${env.PORT} in ${env.NODE_ENV} mode`);
     });
   } catch (error) {

@@ -1,3 +1,4 @@
+import fs from 'fs';
 import { Resend } from 'resend';
 import { env } from '../config/env';
 import { escapeHtml } from '../utils/helpers';
@@ -55,7 +56,11 @@ class EmailService {
         `,
       });
     } catch (error) {
-      console.error('Failed to send verification email:', error);
+      const errMsg = error instanceof Error ? error.message : String(error);
+      console.error('Failed to send verification email:', errMsg);
+      try {
+        fs.appendFileSync('/tmp/email_errors.log', `${new Date().toISOString()} - verification: ${errMsg}\n`);
+      } catch {}
     }
   }
 
@@ -98,7 +103,11 @@ class EmailService {
         `,
       });
     } catch (error) {
-      console.error('Failed to send password reset email:', error);
+      const errMsg = error instanceof Error ? error.message : String(error);
+      console.error('Failed to send password reset email:', errMsg);
+      try {
+        fs.appendFileSync('/tmp/email_errors.log', `${new Date().toISOString()} - password reset: ${errMsg}\n`);
+      } catch {}
     }
   }
 
@@ -137,7 +146,11 @@ class EmailService {
         `,
       });
     } catch (error) {
-      console.error('Failed to send welcome email:', error);
+      const errMsg = error instanceof Error ? error.message : String(error);
+      console.error('Failed to send welcome email:', errMsg);
+      try {
+        fs.appendFileSync('/tmp/email_errors.log', `${new Date().toISOString()} - welcome: ${errMsg}\n`);
+      } catch {}
     }
   }
 }

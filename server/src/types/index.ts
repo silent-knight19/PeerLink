@@ -1,6 +1,7 @@
 import { Request } from 'express';
 
 export type AuthProvider = 'email' | 'google' | 'both';
+export type RoomStatus = 'waiting' | 'active' | 'ended';
 
 export interface UserProfile {
   email: string;
@@ -67,4 +68,36 @@ export interface AuthPayload {
 
 export interface AuthenticatedRequest extends Request {
   user?: AuthPayload;
+}
+
+export interface Room {
+  id: string;
+  hostId: string;
+  status: RoomStatus;
+  maxParticipants: number;
+  createdAt: Date;
+  endedAt: Date | null;
+}
+
+export interface SignalData {
+  type: 'offer' | 'answer' | 'ice-candidate';
+  sdp?: string;
+  candidate?: RTCIceCandidateInit;
+}
+
+export interface ServerToClientEvents {
+  'peer-joined': (data: { socketId: string; userId: string; displayName: string }) => void;
+  'peer-left': (data: { socketId: string; userId: string }) => void;
+  'room-joined': (data: { participants: Array<{ socketId: string; userId: string; displayName: string }> }) => void;
+  'signal': (data: { from: string; data: SignalData }) => void;
+  'room-ended': () => void;
+  'room-full': () => void;
+  'room-error': (data: { message: string }) => void;
+}
+
+export interface ClientToServerEvents {
+  'join-room': (data: { roomId: string }) => void;
+  'leave-room': () => void;
+  'signal': (data: { to: string; data: SignalData }) => void;
+  'end-meeting': () => void;
 }

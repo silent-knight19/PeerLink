@@ -4,9 +4,11 @@ import {
   useEffect,
   useMemo,
   useState,
+  useRef,
 } from 'react';
 import * as authApi from '../services/authApi';
 import { setAccessToken, getAccessToken, tryRefreshToken } from '../services/api';
+import { connectSocket, disconnectSocket } from '../services/socket';
 import type { UserResponse } from '../services/authApi';
 
 interface AuthState {
@@ -38,6 +40,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     isLoading: true,
     isAuthenticated: false,
   });
+
+  const prevAuthRef = useRef(false);
 
   const updateState = useCallback((partial: Partial<AuthState>) => {
     setState((prev) => ({ ...prev, ...partial }));
@@ -82,6 +86,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     hydrateFromToken();
   }, [hydrateFromToken]);
 
+  useEffect(() => {
+    if (state.isAuthenticated && !prevAuthRef.current) {
+      connectSocket();
+    } else if (!state.isAuthenticated && prevAuthRef.current) {
+      disconnectSocket();
+    }
+    prevAuthRef.current = state.isAuthenticated;
+  }, [state.isAuthenticated]);
+
   const login = useCallback(
     async (email: string, password: string) => {
       const result = await authApi.login({ email, password });
@@ -100,9 +113,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const register = useCallback(
     async (email: string, password: string, displayName: string) => {
-      await authApi.register({ email, password, displayName });
+      const result = await authApi.register({ email, password, displayName });
+      if (result.accessToken) {
+        setAccessToken(result.accessToken);
+        updateState({ user: result.user, isAuthenticated: true });
+      }
     },
-    [],
+    [updateState],
   );
 
   const logout = useCallback(async () => {
