@@ -1,0 +1,1057 @@
+================================================================================
+  PEERLINK AUTHENTICATION SYSTEM - DEEP DIVE
+================================================================================
+
+  This document explains every aspect of the authentication system in PeerLink.
+  It is written for developers of all skill levels -- from beginners to
+  experienced engineers.
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+
+  1.  Architecture Overview
+  2.  Tech Stack & Why
+  3.  Database Schema (Firestore)
+  4.  Email/Password Registration
+  5.  Email/Password Login
+  6.  Google OAuth Flow
+  7.  Token Refresh Flow
+  8.  Logout Flow
+  9.  Password Reset Flow
+  10. JWT Deep Dive
+  11. Security Measures
+  12. Session Management
+  13. Rate Limiting
+  14. File Map
+
+================================================================================
+1. ARCHITECTURE OVERVIEW
+================================================================================
+
+  The authentication system is split into three layers:
+
+  +-----------------------------+
+  |   BROWSER (REACT)           |
+  |   +-----------+             |
+  |   | Auth Pages|             |
+  |   +-----------+             |
+  |        |                    |
+  |   +-----------+             |
+  |   | AuthContext|            |
+  |   +-----------+             |
+  |        |                    |
+  |   +-----------+             |
+  |   | Axios API |             |
+  |   +-----------+             |
+  +----------|------------------+
+             | HTTP Requests
+  +----------|------------------+
+  |   NODE.JS (EXPRESS)        |
+  |   +-----------+             |
+  |   |Auth Routes|             |
+  |   +-----------+             |
+  |        |                    |
+  |   +-----------+             |
+  |   |Middleware |             |
+  |   +-----------+             |
+  |        |                    |
+  |   +-----------+             |
+  |   |Auth Service|            |
+  |   +-----------+             |
+  |        |                    |
+  |   +-----------+             |
+  |   |Token Svc  |             |
+  |   +-----------+             |
+  +----|----|----|----|---------+
+       |    |    |    |
+       v    v    v    v
+  +--------+ +------+ +----------+ +----------+
+  |Firebase| |Redis | |Google API| |Resend   |
+  |Firestore|       | |(OAuth)   | |(Email)  |
+  +--------+ +------+ +----------+ +----------+
+
+  How the layers interact:
+
+  Layer         Responsibility                              Example
+  ------        --------------                              -------
+  Client        Renders forms, stores access token in       Login page,
+                memory, attaches it to requests              AuthContext,
+                                                             Axios interceptor
+  Server        Validates input, runs business logic,       Auth routes,
+                issues tokens, persists data                 services, middleware
+  External      Stores data, caches tokens, verifies        Firestore, Redis,
+                Google identity, sends emails                Google APIs, Resend
+
+
+================================================================================
+2. TECH STACK & WHY
+================================================================================
+
+  Node.js + Express
+    - Async I/O -- handles 1000s of concurrent connections
+    - Huge ecosystem -- JWT, bcrypt, validation libraries
+    - Same language as frontend (JavaScript/TypeScript)
+
+  Firebase Firestore
+    - Serverless -- no DB servers to manage
+    - Auto-scales to millions of documents
+    - Realtime sync capability (future meetings)
+
+  Redis
+    - In-memory -- sub-millisecond reads
+    - Distributed rate limiting across servers
+    - Token blacklist & OAuth state store
+
+  JWT (RS256)
+    - Stateless -- no session lookup on every request
+    - Asymmetric keys -- microservices can verify without private key
+    - Industry standard -- every language has a JWT library
+
+  Key Decisions:
+
+  Decision                               Why
+  --------                               ---
+  Fully custom auth (not Firebase Auth)  Full control, no vendor lock-in,
+                                          works with any database
+  httpOnly cookies for refresh tokens    Immune to XSS attacks -- JavaScript
+                                          cannot read them
+  RS256 (asymmetric) JWT                 Private key signs, public key verifies.
+                                          Microservices can verify tokens
+                                          without access to the private key
+  Refresh token rotation                 Every refresh issues a new refresh token
+                                          + revokes the old one. This limits
+                                          the damage if a token is stolen
+  Redis for rate limiting                When you have multiple server instances,
+                                          rate limit state must be shared --
+                                          not possible with in-memory storage
+
+
+================================================================================
+3. DATABASE SCHEMA (FIRESTORE)
+================================================================================
+
+  Firestore is a NoSQL document database. Data is organized into collections
+  containing documents.
+
+  --- Collection: users ---
+
+  +--------------------------+------------------------------------------+
+  | Field                    | Description                              |
+  +--------------------------+------------------------------------------+
+  | id                       | Auto-generated UUID                      |
+  | email                    | Unique (enforced via mapping)            |
+  | displayName              | User's visible name                      |
+  | photoURL                 | Avatar URL (nullable)                    |
+  | authProvider             | 'email' | 'google' | 'both'             |
+  | passwordHash             | bcrypt hash (nullable)                   |
+  | googleId                 | Google's user ID (nullable)              |
+  | emailVerified            | Has user verified?                       |
+  | isActive                 | Soft-deactivate account                  |
+  | failedLoginAttempts      | Incremented on failure                   |
+  | lockedUntil              | Account lock expiry                      |
+  | refreshTokenVersion      | Increment to revoke all sessions          |
+  | activeSessionCount       | Current logged-in devices                |
+  | lastLoginAt              | Timestamp                                |
+  | createdAt                | Timestamp                                |
+  | updatedAt                | Timestamp                                |
+  +--------------------------+------------------------------------------+
+
+  --- Collection: refreshTokens ---
+
+  +--------------------------+------------------------------------------+
+  | Field                    | Description                              |
+  +--------------------------+------------------------------------------+
+  | userId                   | Owner of this token                      |
+  | familyId                 | Same across rotations                    |
+  | sequence                 | Rotation counter                         |
+  | tokenHash                | SHA-256 of the raw token                 |
+  | deviceInfo               | Browser info                             |
+  | ipAddress                | Login IP                                 |
+  | userAgent                | Full user-agent string                   |
+  | expiresAt                | Auto-expiry (7 days)                     |
+  | lastUsedAt               | For session eviction                     |
+  | createdAt                | Timestamp                                |
+  | revoked                  | Manually revoked?                        |
+  +--------------------------+------------------------------------------+
+
+  --- Collection: emailMappings ---
+
+  +--------------------------+------------------------------------------+
+  | Field                    | Description                              |
+  +--------------------------+------------------------------------------+
+  | userId                   | Links email to user                      |
+  +--------------------------+------------------------------------------+
+
+  --- Collection: googleMappings ---
+
+  +--------------------------+------------------------------------------+
+  | Field                    | Description                              |
+  +--------------------------+------------------------------------------+
+  | userId                   | Links Google ID to user                  |
+  +--------------------------+------------------------------------------+
+
+  Why separate email/google mapping collections?
+
+  Firestore does not have a built-in UNIQUE constraint like SQL databases.
+  If two users somehow registered with the same email, we'd have data
+  corruption.
+
+  To enforce uniqueness, we use separate mapping documents that act as
+  uniqueness locks:
+
+    /emailMappings/{base64("user@example.com")} -> { userId: "abc123" }
+
+  When registering, we do this inside a Firestore transaction:
+
+    Step 1: Begin Firestore transaction
+    Step 2: Read /emailMappings/{encoded-email}
+    Step 3: If document EXISTS -> ABORT with "EMAIL_ALREADY_EXISTS"
+    Step 4: If document NOT FOUND -> Create /users/{newId} with user data
+    Step 5: Create /emailMappings/{encoded-email} -> { userId }
+    Step 6: Commit transaction
+
+  This pattern guarantees that no two users can have the same email, even
+  under concurrent signup requests.
+
+
+================================================================================
+4. EMAIL/PASSWORD REGISTRATION
+================================================================================
+
+  Flow:
+
+    USER                REACT CLIENT                SERVER              EXTERNAL
+    ----                ------------                ------              --------
+
+     |-- Fills form --->|
+     | email, password,  |
+     | displayName       |
+     |                   |-- Client-side validation
+     |                   |
+     |                   |-- POST /api/auth/register
+     |                   |   { email, password, displayName } -->|
+     |                   |                                      |-- Zod validation
+     |                   |                                      |   (schema check)
+     |                   |                                      |
+     |                   |                                      |-- Hash password
+     |                   |                                      |   bcrypt(password,12)
+     |                   |                                      |   (~250ms)
+     |                   |                                      |
+     |                   |                                      |-- Firestore TX:
+     |                   |                                      |   Create user doc
+     |                   |                                      |   Create emailMapping
+     |                   |                                      |<-- (done)
+     |                   |                                      |
+     |                   |                                      |-- Generate
+     |                   |                                      |   verification token
+     |                   |                                      |
+     |                   |                                      |-- Store token in
+     |                   |                                      |   Firestore
+     |                   |                                      |
+     |                   |                                      |-- Send verification
+     |                   |                                      |   email ---------->|
+     |                   |                                      |                    |-- Email sent
+     |                   |<-- 201 { message, user } ------------|                    |
+     |<-- "Check email"--|                                      |                    |
+     |   for verification"                                      |                    |
+
+  Password Hashing -- Why bcrypt?
+
+  When you store passwords, you NEVER store the actual password. You store a
+  hash -- a one-way mathematical transformation:
+
+    Password "MySecret123!"
+           |
+           v
+     bcrypt.hash(password, 12)
+           |
+           v
+     $2b$12$LJ3m...8xHu  (60-character hash)
+
+    * bcrypt is intentionally slow -- cost factor 12 means ~250ms per hash
+    * It includes a random salt -- same password produces different hashes
+      each time
+    * Slow hashing defeats brute force -- trying 1000 passwords takes 4+
+      minutes
+
+  Password Requirements (enforced by Zod):
+
+    Rule                            Why
+    ----                            ---
+    Minimum 8 characters            Prevents short, guessable passwords
+    At least 1 uppercase letter     Increases entropy
+    At least 1 lowercase letter     Increases entropy
+    At least 1 digit                Increases entropy
+    At least 1 special character    Greatly increases entropy
+    Maximum 128 characters          Prevents hash-length DoS attacks
+
+  Regex used for validation:
+    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=
+    \[\]{};':"\\|,.<>\/?]).{8,}$/
+
+
+================================================================================
+5. EMAIL/PASSWORD LOGIN
+================================================================================
+
+  Flow:
+
+    USER        REACT CLIENT            SERVER                          EXTERNAL
+    ----        ------------            ------                          --------
+
+     |-- Enters -->|
+     |  email + pwd|
+     |             |-- POST /api/auth/login -------------------------->|
+     |             |   { email, password }                              |
+     |             |                                                    |-- Rate limit check
+     |             |                                                    |   Redis: INCR
+     |             |                                                    |   ratelimit:login:{ip}
+     |             |                                                    |<-- OK (count <= 5)
+     |             |                                                    |
+     |             |                                                    |-- Find user by email
+     |             |                                                    |   via emailMapping
+     |             |                                                    |<-- User found
+     |             |                                                    |
+     |             |                                                    |-- Check lockedUntil
+     |             |                                                    |   (account locked?)
+     |             |                                                    |
+     |             |                                                    |-- bcrypt.compare(
+     |             |                                                    |     password, hash)
+     |             |                                                    |
+     |             |                  --- INVALID PASSWORD ---          |
+     |             |                                                    |-- Increment
+     |             |                                                    |   failedLoginAttempts
+     |             |                                                    |-- If >= 5, set
+     |             |                                                    |   lockedUntil = now+15m
+     |             |<-- 401 "Invalid credentials" ---------------------|
+     |             |
+     |             |                  --- VALID PASSWORD ---            |
+     |             |                                                    |-- Reset failedAttempts
+     |             |                                                    |-- Update lastLoginAt
+     |             |                                                    |
+     |             |                                                    |-- Count active sessions
+     |             |                                                    |-- If >= 10, evict oldest
+     |             |                                                    |
+     |             |                                                    |-- Generate accessToken
+     |             |                                                    |   (15 min expiry)
+     |             |                                                    |-- Generate refreshToken
+     |             |                                                    |   (7 day expiry)
+     |             |                                                    |-- Store refresh token
+     |             |                                                    |   hash in Firestore
+     |             |                                                    |
+     |             |<-- 200 { accessToken, user } ---------------------|
+     |             |    Set-Cookie: refreshToken
+     |             |    (httpOnly, secure, sameSite=strict)
+     |             |
+     |             |-- Store accessToken in memory (React state)
+     |             |   NOT localStorage
+     |             |
+     |<-- Redirect-| 
+     |   to /dashboard
+
+  What happens on the client after login:
+
+    Login successful
+        |
+        +---> Server sets httpOnly cookie: refreshToken
+        |
+        +---> Response body contains: accessToken + user
+        |       |
+        |       +---> React stores accessToken in MEMORY (not localStorage)
+        |               |
+        |               +---> Axios interceptor reads accessToken
+        |                       |
+        |                       +---> Every API request gets header:
+        |                             Authorization: Bearer <accessToken>
+        |
+        +---> Cookie sent automatically with every request to /api/*
+
+    Session persistence across page refresh:
+        Page refresh
+            |
+            +---> React app starts, no token in memory
+                    |
+                    +---> Axios calls POST /api/auth/refresh
+                            |
+                            +---> Cookie sent automatically
+                                    |
+                                    +---> Server validates, returns new
+                                          accessToken
+                                          |
+                                          +---> App is logged in again
+
+  CRITICAL: Access tokens are stored in React state (memory), not
+  localStorage. This means:
+
+    [OK]   An XSS attack cannot steal the access token
+    [OK]   The refresh token is in an httpOnly cookie (inaccessible
+           to JavaScript)
+    [WARN] Page refresh loses the access token -- but the interceptor
+           automatically refreshes it via the cookie
+
+
+================================================================================
+6. GOOGLE OAUTH FLOW
+================================================================================
+
+  This is the most complex flow. It uses the Authorization Code Grant
+  (the gold standard of OAuth flows).
+
+  Flow:
+
+    USER        BROWSER              SERVER                    GOOGLE     REDIS
+    ----        -------              ------                    ------     -----
+
+     |-- Clicks -->|
+     |  "Continue  |
+     |  with Google"|
+     |             |-- GET /api/auth/google ------------------->|
+     |             |                                            |-- Generate
+     |             |                                            |   random state
+     |             |                                            |-- Store state
+     |             |                                            |--------->|
+     |             |<-- { url } ---------------------------------|         |
+     |             |    (Google auth URL with state)             |         |
+     |             |                                            |         |
+     |<-- Redirect-|                                            |         |
+     |   to Google |                                            |         |
+     |             |                                            |         |
+     |-- See login-->|                                          |         |
+     |   screen,  |                                            |         |
+     |   pick     |                                            |         |
+     |   account  |                                            |         |
+     |             |                                            |         |
+     |<-- Redirect-|                                            |         |
+     |   to callback                                            |         |
+     |   ?code=...&state=...                                    |         |
+     |             |                                            |         |
+     |-------------|-- GET /api/auth/google/callback ---------->|         |
+     |             |    ?code=...&state=...                     |         |
+     |             |                                            |-- Validate state
+     |             |                                            |--------->|
+     |             |                                            |<-- Valid |
+     |             |                                            |         |
+     |             |                                            |-- Exchange code
+     |             |                                            |  for tokens -->|
+     |             |                                            |<-- id_token ---|
+     |             |                                            |   access_token
+     |             |                                            |   refresh_token
+     |             |                                            |
+     |             |                                            |-- Verify id_token
+     |             |                                            |   signature + aud
+     |             |                                            |   + issuer
+     |             |                                            |
+     |             |                                            |-- Check googleMappings
+     |             |                                            |   for existing user
+     |             |                                            |
+     |             |                               --- EXISTING USER ---
+     |             |                                            |-- Update profile
+     |             |                                            |   (photoURL, name)
+     |             |                                            |-- Set emailVerified
+     |             |
+     |             |                               --- NEW USER ---
+     |             |                                            |-- Create user doc
+     |             |                                            |-- Create googleMapping
+     |             |                                            |-- Create emailMapping
+     |             |
+     |             |                                            |-- Enforce session limit
+     |             |                                            |-- Generate tokens
+     |             |
+     |             |<-- Redirect /auth/callback?accessToken=...--
+     |             |    Set-Cookie: refreshToken (httpOnly)
+     |
+     |-- Read accessToken from URL
+     |-- Store in memory
+     |-- Redirect to /dashboard
+
+  Why the "state" parameter matters:
+
+  Without the state parameter, an attacker could:
+    1. Create their own PeerLink login URL
+    2. Trick you into clicking it
+    3. You authenticate with Google
+    4. The attacker's server intercepts the code
+    5. They log into YOUR account
+
+  The state parameter prevents this:
+
+    App generates random state -> Stores in Redis
+                              -> Sends to Google
+                                   -> Google includes state in callback
+                                      -> Server checks: does state exist
+                                         in Redis?
+                                            |
+                                            +-> YES -> Continue login
+                                            +-> NO  -> Reject (CSRF attack
+                                                       detected)
+
+
+================================================================================
+7. TOKEN REFRESH FLOW
+================================================================================
+
+  Access tokens expire after 15 minutes. When they do, the client's Axios
+  interceptor automatically refreshes them.
+
+  Flow:
+
+    REACT CLIENT        AXIOS INTERCEPTOR       SERVER              FIRESTORE
+    ------------        ----------------        ------              ---------
+
+      |-- API request -->|
+      |   with expired    |
+      |   accessToken     |
+      |                   |-- Try request ------>|
+      |                   |                      |-- 401 (expired)
+      |                   |<---------------------|
+      |                   |
+      |                   |-- Is refresh already
+      |                   |   in progress?
+      |                   |   If yes, queue request
+      |                   |   (don't duplicate refresh)
+      |                   |
+      |                   |-- POST /api/auth/refresh -->|
+      |                   |   (cookie sent              |
+      |                   |    automatically)          |-- Hash refresh token
+      |                   |                            |
+      |                   |                            |-- Find by hash --->|
+      |                   |                            |<-- Token found ----|
+      |                   |                            |   (not revoked)
+      |                   |                            |
+      |                   |                            |-- Check expiresAt
+      |                   |                            |
+      |                   |          --- EXPIRED ---   |
+      |                   |<-- 401 --------------------|
+      |                   |-- Clear auth state         |
+      |                   |-- Redirect to /login       |
+      |                   |
+      |                   |          --- VALID ---     |
+      |                   |                            |-- Revoke OLD
+      |                   |                            |   refresh token
+      |                   |                            |
+      |                   |                            |-- Generate NEW
+      |                   |                            |   accessToken + NEW
+      |                   |                            |   refreshToken
+      |                   |                            |   (this is "rotation")
+      |                   |                            |
+      |                   |                            |-- Store new --------->|
+      |                   |                            |   refresh token hash  |
+      |                   |                            |                       |
+      |                   |<-- 200 { accessToken } ----|
+      |                   |    Set-Cookie: new
+      |                   |    refreshToken
+      |                   |
+      |                   |-- Store new accessToken
+      |                   |   in memory
+      |                   |
+      |<-- Retry original---
+      |   request with
+      |   new token
+      |
+      |-- Request succeeds
+
+  Why rotate refresh tokens?
+
+    WITHOUT ROTATION:                      WITH ROTATION:
+    Token stolen                           Token stolen
+        |                                       |
+        +-> Attacker can refresh                +-> Legitimate user refreshes
+            indefinitely                              |
+            |                                         +-> Old token revoked
+            +-> Attacker stays logged                  +-> New token issued
+                in forever                                  |
+                                                            +-> Attacker's
+                                                                stolen token
+                                                                is now useless
+
+                                            If attacker uses token BEFORE user:
+                                                User's refresh fails
+                                                Token theft detected
+                                                    |
+                                                    +-> All sessions revoked
+                                                    +-> User must re-login
+
+  Token Reuse Detection:
+
+    This is an advanced security feature:
+
+    ATTACKER          SERVER              LEGITIMATE USER
+    --------          ------              ---------------
+
+      |-- POST /auth/refresh -->|
+      |   using stolen token    |-- Token valid
+      |                         |-- Issue new tokens
+      |<-- New tokens ----------|
+      |
+                           (time passes)
+      |
+                          LEGITIMATE USER tries to refresh:
+                              |
+                              |-- POST /auth/refresh ------|
+                              |   using now-stale token    |
+                              |                            |-- Token hash exists
+                              |                            |   but was REVOKED!
+                              |                            |-- TOKEN REUSE
+                              |                            |   DETECTED
+                              |                            |-- Increment
+                              |                            |   refreshTokenVersion
+                              |                            |-- Revoke ALL sessions
+                              |                            |
+                              |<-- 401 "Session revoked ---|
+                              |    please login again"
+
+      Attacker's stolen token worked once, but the legitimate user is
+      alerted when they try to use the app.
+
+
+================================================================================
+8. LOGOUT FLOW
+================================================================================
+
+  Flow:
+
+    USER        REACT CLIENT                SERVER
+    ----        ------------                ------
+
+     |-- Click -->|
+     |  "Logout"  |
+     |             |-- POST /api/auth/logout ---------->|
+     |             |   (cookie + Authorization header)   |
+     |             |                                    |-- Verify accessToken
+     |             |                                    |-- Hash refreshToken
+     |             |                                    |   from cookie
+     |             |                                    |-- Set revoked=true
+     |             |                                    |   on refresh token
+     |             |                                    |-- Decrement
+     |             |                                    |   activeSessionCount
+     |             |<-- Clear-Cookie: refreshToken -----|
+     |             |<-- 200 { message: "Logged out" } --|
+     |             |
+     |             |-- Clear accessToken from memory
+     |             |-- Clear user from AuthContext
+     |             |
+     |<-- Redirect-|
+     |   to /login
+
+
+================================================================================
+9. PASSWORD RESET FLOW
+================================================================================
+
+  Flow:
+
+    USER        REACT CLIENT            SERVER                    EMAIL
+    ----        ------------            ------                    -----
+
+     |-- Clicks -->|
+     |  "Forgot    |
+     |  Password"  |
+     |             |-- POST /api/auth/forgot-password -------->|
+     |             |   { email }                                |
+     |             |                                            |-- Find user by email
+     |             |                                            |
+     |             |                          --- USER NOT FOUND ---
+     |             |                                            |-- (same response
+     |             |                                            |    regardless)
+     |             |
+     |             |                          --- USER FOUND ---
+     |             |                                            |-- Generate reset
+     |             |                                            |   token (random)
+     |             |                                            |-- Store in Firestore
+     |             |                                            |-- Send email ------->|
+     |             |                                            |                      |-- Email sent
+     |             |<-- 200 "If account exists, email sent" ----|
+     |<-- "Check --|
+     |   email for |
+     |   reset link"|
+
+    (User clicks link in email)
+
+     |-- Opens --->|
+     |  /reset-pwd |
+     |  ?token=xxx |
+     |             |-- POST /api/auth/reset-password -------->|
+     |             |   { token, newPassword }                  |
+     |             |                                            |-- Find reset token
+     |             |                                            |   by hash
+     |             |                                            |-- Check: not expired,
+     |             |                                            |   not used
+     |             |                                            |
+     |             |                                            |-- bcrypt.hash(
+     |             |                                            |     newPassword, 12)
+     |             |                                            |-- Update user's
+     |             |                                            |   passwordHash
+     |             |                                            |-- Increment
+     |             |                                            |   refreshTokenVersion
+     |             |                                            |   (invalidates ALL
+     |             |                                            |    sessions)
+     |             |                                            |-- Revoke ALL refresh
+     |             |                                            |   tokens
+     |             |                                            |-- Mark token as used
+     |             |                                            |
+     |             |<-- 200 "Password reset successfully" ------|
+     |             |
+     |<-- Redirect-|
+     |   to /login |
+     |             |
+     |-- Login with new password ------------------------------>|
+
+
+================================================================================
+10. JWT DEEP DIVE
+================================================================================
+
+  What is a JWT?
+
+  A JSON Web Token is a self-contained token that looks like this:
+
+    eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9           <- Header (base64)
+    eyJ1c2VySWQiOiI4YjNjIiwidG9rZW5WZXJzaW9uIjoxfQ <- Payload (base64)
+    [n8E3...signature]                                <- Signature
+
+  Anatomy of a PeerLink Access Token:
+
+    Header (decoded):
+    {
+      "alg": "RS256",
+      "typ": "JWT"
+    }
+
+    Payload (decoded):
+    {
+      "userId": "8ebfdfc9-849d-43a2-ae91-cf3edc7d696a",
+      "email": "user@example.com",
+      "displayName": "John Doe",
+      "tokenVersion": 3,
+      "iat": 1712345678,   (issued at -- Unix timestamp)
+      "exp": 1712346578,   (expires at -- Unix timestamp)
+      "iss": "peerlink"    (issuer)
+    }
+
+  RS256 Signing (Asymmetric):
+
+    BACKEND SERVER                      BROWSER              ANY MICROSERVICE
+    --------------                      -------              ----------------
+
+    Private Key (Keep SECRET)
+         |
+         v
+    JWT.sign(payload, privateKey)
+         |
+         v
+    JWT Token ---------------------> JWT Token ------------> JWT.verify(token,
+         |                                                       publicKey)
+                                                              Public Key (Safe
+                                                              to share)
+                                                                   |
+                                                              +----+----+
+                                                              |         |
+                                                              v         v
+                                                         VALID?    INVALID?
+                                                              |         |
+                                                              v         v
+                                                         Allow     Reject
+                                                         request   request
+
+  Why asymmetric (RS256) over symmetric (HS256)?
+
+    Feature                  HS256 (symmetric)     RS256 (asymmetric)
+    -------                  -----------------     ------------------
+    One secret signs AND     [OK] Simple            [--] Shared secret
+    verifies                                        is a risk
+    Separate keys for        [--] Not possible      [OK] Private signs,
+    sign/verify                                      public verifies
+    Microservice             [--] Must trust the    [OK] Public key is safe
+    verification              secret to every        to distribute
+                              service
+    Key rotation             [--] All services      [OK] Just rotate the
+                              need new secret        key pair
+                              simultaneously
+    Our choice                                       [OK] RS256
+
+
+================================================================================
+11. SECURITY MEASURES
+================================================================================
+
+  Defense in Depth:
+
+    NETWORK LAYER:
+      +-------------------------+
+      | Helmet: Security        |
+      |   Headers               |
+      | CORS: Origin Whitelist  |
+      | HTTPS in production     |
+      +-------------------------+
+               |
+               v
+    APPLICATION LAYER:
+      +-------------------------+
+      | Zod Input Validation    |
+      | Rate Limiting           |
+      | Account Lockout         |
+      +-------------------------+
+               |
+               v
+    AUTHENTICATION LAYER:
+      +-------------------------+
+      | bcrypt Slow Hashing     |
+      | Refresh Token Rotation  |
+      | Token Theft Detection   |
+      | Session Versioning      |
+      +-------------------------+
+               |
+               v
+    CLIENT LAYER:
+      +-------------------------+
+      | httpOnly Cookies        |
+      | Memory-only Access      |
+      |   Token Storage         |
+      | XSS Protection          |
+      +-------------------------+
+
+  Each measure explained:
+
+   #  Measure                    What it does                 How it works
+   -- -------                    ------------                 ------------
+   1  bcrypt cost=12             Makes password cracking      ~250ms per hash --
+                                 expensive                    1000 attempts =
+                                                              4 minutes
+   2  Account lockout            Prevents brute force on      5 failed attempts
+                                 specific accounts            -> 15 minute lock
+   3  Rate limiting              Prevents brute force         5 login attempts
+                                 across accounts              per 15 min per IP
+   4  httpOnly cookies           Protects refresh token       JavaScript cannot
+                                 from XSS                     read httpOnly
+                                                               cookies
+   5  Memory-only access token   Protects access token        React state (not
+                                 from XSS                     localStorage) =
+                                                               gone on tab close
+   6  Refresh token rotation     Limits stolen token          Old token revoked
+                                 window                       on every refresh
+   7  Token versioning           Force logout all devices     Increment
+                                 instantly                    refreshTokenVersion
+                                                               -> all old JWTs
+                                                               rejected
+   8  CSRF via state param       Protects Google OAuth        Random state stored
+                                                               in Redis, verified
+                                                               on callback
+   9  Zod validation             Prevents injection attacks   Schema enforcement
+                                                               on every endpoint
+  10  Helmet                     Security HTTP headers        Sets CSP,
+                                                               X-Frame-Options,
+                                                               etc.
+  11  Password strength rules    Ensures strong passwords     Regex: uppercase +
+                                                               lowercase + number
+                                                               + special + 8+ chars
+  12  Same response for          Prevents email enumeration   Forgot password
+      unknown email                                            returns same message
+                                                               whether email exists
+                                                               or not
+
+
+================================================================================
+12. SESSION MANAGEMENT
+================================================================================
+
+  Session Limit (Max 10 Devices):
+
+    User logs in on device #11
+        |
+        +-> Count active sessions
+              |
+              +-> Active sessions >= 10?
+                    |
+                    +-> NO  -> Allow login
+                    |
+                    +-> YES -> Find session with oldest lastUsedAt
+                                |
+                                +-> Revoke that session
+                                |
+                                +-> Allow login
+
+  Session Versioning:
+
+    Every user has a refreshTokenVersion field. This is included in the
+    JWT payload:
+
+      JWT Payload:  { userId, email, tokenVersion: 3 }
+      User Document: { refreshTokenVersion: 3 }
+
+    When the server verifies a JWT, it checks:
+
+      jwt.tokenVersion === user.refreshTokenVersion ?
+          |
+          +-> YES -> Allow request
+          |
+          +-> NO  -> Reject request (session revoked)
+
+    This means we can instantly invalidate all sessions by incrementing
+    refreshTokenVersion. This happens when:
+
+      * User changes password
+      * Password reset is completed
+      * Token theft is detected
+      * Admin deactivates account
+
+
+================================================================================
+13. RATE LIMITING
+================================================================================
+
+  Rate limiting prevents abuse by limiting how many requests a client can
+  make in a given time window.
+
+  Configuration:
+
+    Endpoint                Window        Max requests    Why this limit
+    --------                ------        ------------    ---------------
+    /register               1 hour        3               Prevents mass account
+                                                           creation
+    /login                  15 min        5               Prevents brute force
+                                                           password guessing
+    /forgot-password        1 hour        3               Prevents spamming
+                                                           someone's inbox
+    /refresh                15 min        10              Prevents excessive
+                                                           token rotation
+    /change-password        1 hour        3               Limits password change
+                                                           attempts
+    /verify-email           1 hour        5               Prevents abuse of
+                                                           verification endpoint
+    Global                  1 min         60              General DDoS protection
+
+  How it works (with Redis):
+
+    CLIENT                  RATE LIMITER                REDIS
+    ------                  ------------                -----
+
+     |-- POST /api/auth ------>|
+     |   /login                |-- INCR
+     |                         |   ratelimit:login:203.0.113.42 ------->|
+     |                         |<-- 1 (this is request #1) -------------|
+     |                         |                                        |
+     |                         |-- EXPIRE
+     |                         |   ratelimit:login:203.0.113.42 900 --->|
+     |                         |<-- OK (will auto-delete after 15 min)-|
+     |                         |
+     |<-- Proceed to login ----|
+     |   handler               |
+
+    (5 more requests from same IP in 15 minutes)
+
+     |-- 6th POST /api/auth --->|
+     |   /login                 |-- INCR
+     |                          |   ratelimit:login:203.0.113.42 ------->|
+     |                          |<-- 6 (exceeds max 5) -----------------|
+     |                          |
+     |<-- 429 Too Many Requests-|
+     |   Retry-After: 467       |
+     |   (seconds remaining)    |
+
+  In development (single server), rate limiting uses an in-memory store.
+  In production (multiple servers), it uses Redis so that all servers share
+  the same rate limit state.
+
+
+================================================================================
+14. FILE MAP
+================================================================================
+
+  server/src/
+  |
+  +-- config/
+  |   +-- env.ts              Environment variable validation (Zod)
+  |   +-- firebase.ts         Firebase Admin SDK initialization
+  |   +-- redis.ts            Redis client (rate limiting, state store)
+  |
+  +-- models/
+  |   +-- userModel.ts        Firestore CRUD for users + email/google
+  |   |                         mappings
+  |   +-- tokenModel.ts       Firestore CRUD for refresh + verification
+  |                             tokens
+  |
+  +-- services/
+  |   +-- authService.ts      Core business logic (register, login, logout,
+  |   |                         etc.)
+  |   +-- tokenService.ts     JWT issue, verify, rotate, blacklist
+  |   +-- googleService.ts    Google OAuth URL generation + token
+  |   |                         verification
+  |   +-- emailService.ts     Resend integration for verification + reset
+  |                             emails
+  |
+  +-- middleware/
+  |   +-- authenticate.ts     JWT verification + user status check
+  |   |                         (Redis cached)
+  |   +-- rateLimiter.ts      Per-endpoint rate limiting
+  |   +-- validate.ts         Generic Zod schema runner
+  |
+  +-- routes/
+  |   +-- authRoutes.ts       12 auth endpoints
+  |
+  +-- validators/
+  |   +-- authValidators.ts   Zod schemas for every request body/query
+  |
+  +-- types/
+  |   +-- index.ts            Shared TypeScript interfaces
+  |
+  +-- utils/
+  |   +-- errors.ts           Custom error classes (AppError, AuthError,
+  |   |                         etc.)
+  |   +-- helpers.ts          Utility functions (hash, encode, sanitize)
+  |
+  +-- app.ts                  Express entry point
+
+  client/src/
+  |
+  +-- context/
+  |   +-- AuthContext.tsx      React context: user state, login, logout,
+  |                             refresh
+  +-- hooks/
+  |   +-- useAuth.ts          Shortcut hook to access AuthContext
+  |
+  +-- services/
+  |   +-- api.ts              Axios instance with auto-refresh interceptor
+  |   +-- authApi.ts          Typed API functions for every auth endpoint
+  |
+  +-- pages/
+  |   +-- Login.tsx           Login form + Google button
+  |   +-- Register.tsx        Registration form + Google button
+  |   +-- AuthCallback.tsx    Google OAuth redirect handler
+  |
+  +-- components/
+  |   +-- ProtectedRoute.tsx  Redirects to /login if not authenticated
+  |
+  +-- utils/
+  |   +-- validators.ts       Client-side input validation
+  |
+  +-- index.css               Auth page styles
+
+
+================================================================================
+SUMMARY
+================================================================================
+
+  The PeerLink authentication system implements industry-standard security
+  practices:
+
+    * Passwords are hashed with bcrypt (cost 12)
+    * Tokens use RS256 JWT with short-lived access tokens (15 min) and
+      rotated refresh tokens (7 days)
+    * Sessions are capped at 10 devices with automatic eviction of
+      least-recently-used sessions
+    * Rate limiting protects every endpoint against abuse
+    * httpOnly cookies protect refresh tokens from XSS
+    * Memory-only storage protects access tokens from XSS
+    * Asymmetric signing allows any microservice to verify tokens without
+      the private key
+    * Atomic Firestore transactions guarantee email uniqueness at any scale
+    * Redis provides shared state for rate limiting, token blacklisting, and
+      OAuth CSRF protection
+
+  This design scales to hundreds of thousands of users without architectural
+  changes.
+
+================================================================================
+  END OF DOCUMENT
+================================================================================

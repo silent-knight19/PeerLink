@@ -1,0 +1,30 @@
+# Dependency directories
+node_modules/
+
+# Build directories
+dist/
+build/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# MacOS
+.DS_Store
+
+# Testing
+coverage/
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
