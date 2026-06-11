@@ -707,10 +707,15 @@ body {
 }
 
 .mute-indicator,
-.cam-indicator {
+.cam-indicator,
+.share-indicator {
   color: #ef4444;
   font-size: 11px;
   font-weight: 500;
+}
+
+.share-indicator {
+  color: #22c55e;
 }
 
 /* Meeting Controls */
@@ -799,4 +804,34 @@ body {
   .meeting-controls {
     flex-wrap: wrap;
   }
+}
+
+/* Video tile autoplay states */
+.video-tile.waiting-play {
+  background: var(--color-dark-surface);
+}
+
+.play-prompt {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  color: white;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  z-index: 10;
+  transition: background 0.2s;
+}
+
+.play-prompt:hover {
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.video-tile .video-element {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }

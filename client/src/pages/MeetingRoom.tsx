@@ -68,24 +68,41 @@ export default function MeetingRoom() {
     };
 
     const onRoomEnded = () => {
+      leaveMeeting();
       setErrorMessage('The meeting has ended');
       setConnectionState('error');
     };
 
-    socket.on('room-joined', onRoomJoined);
+    const joinRoom = () => {
+      console.log('[MeetingRoom] Emitting join-room for', roomId);
+      socket.emit('join-room', { roomId });
+    };
+
+    socket.on('room-joined', (data) => {
+      console.log('[MeetingRoom] Received room-joined, participants:', data.participants?.length);
+      onRoomJoined();
+    });
     socket.on('room-full', onRoomFull);
     socket.on('room-error', onRoomError);
     socket.on('room-ended', onRoomEnded);
+    socket.on('connect', () => {
+      console.log('[MeetingRoom] Socket connected');
+      joinRoom();
+    });
 
-    socket.emit('join-room', { roomId });
+    if (socket.connected) {
+      joinRoom();
+    }
 
     return () => {
       socket.off('room-joined', onRoomJoined);
       socket.off('room-full', onRoomFull);
       socket.off('room-error', onRoomError);
       socket.off('room-ended', onRoomEnded);
+      socket.off('connect', joinRoom);
+      socket.emit('leave-room');
     };
-  }, [socket, roomId, isLoading, user?.id]);
+  }, [socket, roomId, isLoading, user?.id, leaveMeeting]);
 
   useEffect(() => {
     if (error) {
@@ -137,12 +154,16 @@ export default function MeetingRoom() {
           isLocal
           isMuted={isMuted}
           isCamOff={isCamOff}
+          isScreenSharing={isScreenSharing}
           displayName={`${displayName} (You)`}
         />
         {allPeers.map(([socketId, peer]) => (
           <VideoTile
             key={socketId}
             stream={peer.stream}
+            isMuted={peer.isMuted}
+            isCamOff={peer.isCamOff}
+            isScreenSharing={peer.isScreenSharing}
             displayName={peer.displayName}
           />
         ))}

@@ -1,4 +1,5 @@
 import http from 'http';
+import path from 'path';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -16,9 +17,42 @@ import { AppError } from './utils/errors';
 const app = express();
 const server = http.createServer(app);
 
+const configuredClientOrigins = env.CLIENT_URL.split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+function isAllowedDevOrigin(origin: string): boolean {
+  if (!env.isDevelopment) return false;
+
+  try {
+    const { hostname, port, protocol } = new URL(origin);
+    if (protocol !== 'http:' && protocol !== 'https:') return false;
+    if (port !== '5173') return false;
+
+    return (
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname.startsWith('192.168.') ||
+      hostname.startsWith('10.') ||
+      /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isAllowedOrigin(origin?: string): boolean {
+  if (!origin) return true;
+  return configuredClientOrigins.includes(origin) || isAllowedDevOrigin(origin);
+}
+
+function corsOrigin(origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void): void {
+  callback(null, isAllowedOrigin(origin));
+}
+
 const io = new SocketIOServer(server, {
   cors: {
-    origin: env.CLIENT_URL,
+    origin: corsOrigin,
     credentials: true,
     methods: ['GET', 'POST'],
   },
@@ -31,7 +65,7 @@ export { io };
 
 app.use(helmet());
 app.use(cors({
-  origin: env.CLIENT_URL,
+  origin: corsOrigin,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -52,14 +86,11 @@ app.get('/api/health', (_req: Request, res: Response) => {
   });
 });
 
-app.use((_req: Request, res: Response) => {
-  res.status(404).json({
-    error: {
-      code: 'NOT_FOUND',
-      message: 'The requested resource was not found',
-      statusCode: 404,
-    },
-  });
+const clientDistPath = path.join(__dirname, '../../client/dist');
+app.use(express.static(clientDistPath));
+
+app.get('*', (_req: Request, res: Response) => {
+  res.sendFile(path.join(clientDistPath, 'index.html'));
 });
 
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {

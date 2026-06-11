@@ -81,15 +81,29 @@ export interface Room {
 
 export interface SignalData {
   type: 'offer' | 'answer' | 'ice-candidate';
-  sdp?: string;
+  sdp?: RTCSessionDescriptionInit;
   candidate?: RTCIceCandidateInit;
 }
 
+export interface MediaState {
+  isMuted: boolean;
+  isCamOff: boolean;
+  isScreenSharing: boolean;
+}
+
+export interface ParticipantInfo {
+  socketId: string;
+  userId: string;
+  displayName: string;
+  mediaState: MediaState;
+}
+
 export interface ServerToClientEvents {
-  'peer-joined': (data: { socketId: string; userId: string; displayName: string }) => void;
+  'peer-joined': (data: ParticipantInfo) => void;
   'peer-left': (data: { socketId: string; userId: string }) => void;
-  'room-joined': (data: { participants: Array<{ socketId: string; userId: string; displayName: string }> }) => void;
+  'room-joined': (data: { participants: ParticipantInfo[] }) => void;
   'signal': (data: { from: string; data: SignalData }) => void;
+  'media-state': (data: { socketId: string; userId: string; mediaState: MediaState }) => void;
   'room-ended': () => void;
   'room-full': () => void;
   'room-error': (data: { message: string }) => void;
@@ -99,5 +113,6 @@ export interface ClientToServerEvents {
   'join-room': (data: { roomId: string }) => void;
   'leave-room': () => void;
   'signal': (data: { to: string; data: SignalData }) => void;
+  'media-state': (data: MediaState) => void;
   'end-meeting': () => void;
 }
