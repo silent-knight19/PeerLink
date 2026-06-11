@@ -9,9 +9,13 @@ import { getRedis } from '../config/redis';
  */
 function createStore(prefix: string) {
   try {
+    const redis = getRedis();
+    if (!redis) {
+      console.warn(`Redis unavailable — using memory store for rate limiter: ${prefix}`);
+      return undefined;
+    }
     return new RedisStore({
       sendCommand: (...args: string[]) => {
-        const redis = getRedis();
         return redis.call(args[0], ...args.slice(1)) as any;
       },
       prefix: `ratelimit:${prefix}:`,

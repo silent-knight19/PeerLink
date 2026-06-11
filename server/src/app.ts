@@ -121,8 +121,11 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 
 async function start() {
   try {
-    await connectRedis();
-    console.log('Connected to Redis');
+    try {
+      await connectRedis();
+    } catch (error) {
+      console.warn('Redis unavailable — running without it:', error);
+    }
 
     server.listen(env.PORT, () => {
       console.log(`Server running on port ${env.PORT} in ${env.NODE_ENV} mode`);

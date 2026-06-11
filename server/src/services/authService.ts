@@ -29,6 +29,7 @@ const BCRYPT_SALT_ROUNDS = 12;
 const VERIFICATION_TOKEN_EXPIRY_SECONDS = 86400; // 24 hours
 const PASSWORD_RESET_TOKEN_EXPIRY_SECONDS = 3600; // 1 hour
 const STATE_STORE_PREFIX = 'google_oauth_state:';
+const inMemoryStateStore = new Map<string, number>();
 
 interface RegisterParams {
   email: string;
@@ -194,13 +195,25 @@ export class AuthService {
     userAgent: string,
   ): Promise<AuthResult> {
     const redis = getRedis();
-    const storedState = await redis.get(`${STATE_STORE_PREFIX}${state}`);
+    let stateValid = false;
 
-    if (!storedState) {
-      throw new AuthError('INVALID_STATE', 'Invalid OAuth state. Please try again.');
+    if (redis) {
+      const storedState = await redis.get(`${STATE_STORE_PREFIX}${state}`);
+      stateValid = !!storedState;
+      if (stateValid) {
+        await redis.del(`${STATE_STORE_PREFIX}${state}`);
+      }
+    } else {
+      const expiry = inMemoryStateStore.get(state);
+      if (expiry && expiry > Date.now()) {
+        stateValid = true;
+      }
+      inMemoryStateStore.delete(state);
     }
 
-    await redis.del(`${STATE_STORE_PREFIX}${state}`);
+    if (!stateValid) {
+      throw new AuthError('INVALID_STATE', 'Invalid OAuth state. Please try again.');
+    }
 
     let googleProfile: GoogleProfile;
     try {
@@ -441,12 +454,17 @@ export class AuthService {
     const state = crypto.randomBytes(32).toString('hex');
     const redis = getRedis();
 
-    await redis.set(
-      `${STATE_STORE_PREFIX}${state}`,
-      'valid',
-      'EX',
-      300, // 5 minutes
-    );
+    if (redis) {
+      await redis.set(
+        `${STATE_STORE_PREFIX}${state}`,
+        'valid',
+        'EX',
+        300, // 5 minutes
+      );
+    } else {
+      inMemoryStateStore.set(state, Date.now() + 300_000);
+      setTimeout(() => inMemoryStateStore.delete(state), 300_000);
+    }
 
     return state;
   }

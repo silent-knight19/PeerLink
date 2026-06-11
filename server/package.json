@@ -4,8 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "tsx watch src/app.ts",
-    "build": "echo 'server runs via tsx'",
-    "start": "tsx src/app.ts",
+    "build": "tsc",
+    "start": "node dist/app.js",
     "lint": "tsx --eval ''"
   },
   "dependencies": {

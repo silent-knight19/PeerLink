@@ -44,23 +44,25 @@ export async function authenticate(
     const payload = verifyAccessToken(token);
 
     const redis = getRedis();
-    const cacheKey = `${USER_CACHE_PREFIX}${payload.userId}`;
-    const cached = await redis.get(cacheKey);
+    if (redis) {
+      const cacheKey = `${USER_CACHE_PREFIX}${payload.userId}`;
+      const cached = await redis.get(cacheKey);
 
-    if (cached) {
-      const cachedData: CachedUserStatus = JSON.parse(cached);
+      if (cached) {
+        const cachedData: CachedUserStatus = JSON.parse(cached);
 
-      if (cachedData.status === 'inactive') {
-        throw new ForbiddenError('ACCOUNT_DISABLED', 'Account has been disabled');
+        if (cachedData.status === 'inactive') {
+          throw new ForbiddenError('ACCOUNT_DISABLED', 'Account has been disabled');
+        }
+
+        if (cachedData.tokenVersion !== payload.tokenVersion) {
+          throw new AuthError('TOKEN_REVOKED', 'Session has been revoked. Please login again.');
+        }
+
+        req.user = payload;
+        next();
+        return;
       }
-
-      if (cachedData.tokenVersion !== payload.tokenVersion) {
-        throw new AuthError('TOKEN_REVOKED', 'Session has been revoked. Please login again.');
-      }
-
-      req.user = payload;
-      next();
-      return;
     }
 
     const user = await findUserById(payload.userId);
@@ -70,8 +72,10 @@ export async function authenticate(
     }
 
     if (!user.isActive) {
-      const inactiveData: CachedUserStatus = { status: 'inactive', tokenVersion: user.refreshTokenVersion };
-      await redis.set(cacheKey, JSON.stringify(inactiveData), 'EX', USER_CACHE_TTL);
+      if (redis) {
+        const inactiveData: CachedUserStatus = { status: 'inactive', tokenVersion: user.refreshTokenVersion };
+        await redis.set(`${USER_CACHE_PREFIX}${payload.userId}`, JSON.stringify(inactiveData), 'EX', USER_CACHE_TTL);
+      }
       throw new ForbiddenError('ACCOUNT_DISABLED', 'Account has been disabled');
     }
 
@@ -79,8 +83,10 @@ export async function authenticate(
       throw new AuthError('TOKEN_REVOKED', 'Session has been revoked. Please login again.');
     }
 
-    const activeData: CachedUserStatus = { status: 'active', tokenVersion: user.refreshTokenVersion };
-    await redis.set(cacheKey, JSON.stringify(activeData), 'EX', USER_CACHE_TTL);
+    if (redis) {
+      const activeData: CachedUserStatus = { status: 'active', tokenVersion: user.refreshTokenVersion };
+      await redis.set(`${USER_CACHE_PREFIX}${payload.userId}`, JSON.stringify(activeData), 'EX', USER_CACHE_TTL);
+    }
 
     req.user = payload;
     next();

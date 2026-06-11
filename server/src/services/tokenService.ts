@@ -140,12 +140,14 @@ export async function revokeToken(token: string): Promise<void> {
 
 export async function blacklistAccessToken(token: string, expirySeconds: number): Promise<void> {
   const redis = getRedis();
+  if (!redis) return;
   const key = `${ACCESS_TOKEN_BLACKLIST_PREFIX}${token}`;
   await redis.set(key, '1', 'EX', expirySeconds);
 }
 
 export async function isAccessTokenBlacklisted(token: string): Promise<boolean> {
   const redis = getRedis();
+  if (!redis) return false;
   const result = await redis.get(`${ACCESS_TOKEN_BLACKLIST_PREFIX}${token}`);
   return result !== null;
 }

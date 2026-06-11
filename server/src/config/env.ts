@@ -23,7 +23,7 @@ export const env = {
   FIREBASE_CLIENT_EMAIL: requireEnv('FIREBASE_CLIENT_EMAIL'),
   FIREBASE_PRIVATE_KEY: requireEnv('FIREBASE_PRIVATE_KEY').replace(/\\n/g, '\n'),
 
-  REDIS_URL: requireEnv('REDIS_URL'),
+  REDIS_URL: optionalEnv('REDIS_URL', ''),
 
   JWT_PRIVATE_KEY: Buffer.from(requireEnv('JWT_PRIVATE_KEY_BASE64'), 'base64').toString('utf-8'),
   JWT_PUBLIC_KEY: Buffer.from(requireEnv('JWT_PUBLIC_KEY_BASE64'), 'base64').toString('utf-8'),
