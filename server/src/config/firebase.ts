@@ -17,6 +17,4 @@ admin.initializeApp({
 export const firestore = getFirestore('peerlink');
 firestore.settings({ ignoreUndefinedProperties: true });
 
-export const auth = admin.auth();
-
 export default admin;
